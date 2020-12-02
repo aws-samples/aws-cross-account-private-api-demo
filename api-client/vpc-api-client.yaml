@@ -1,0 +1,219 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Deploys a VPC and nested API client stack with Lambda function and VPC endpoints
+
+Parameters:
+  pAPIHost:
+    Description: Fully qualified domain name of the API gateway
+    Type: String
+  pAPIPrefix:
+    Description: >-
+      URI path prefix for the API (usually the stage name with a / in front)
+    Type: String
+    Default: /Prod
+  pAPIAccountID:
+    Description: >-
+      AWS Account that hosts the API.  "Local" will be substituted with 
+      AWS::AccountId.
+    Type: String
+    Default: Local
+  pAPIRoleARN:
+    Description: >-
+      Role ARN with API invoke privileges.  If specified, client Lambda function
+      will assume this role to invoke the API instead of using its own.
+    Type: String
+    Default: 'None'
+  pAPITimeout:
+    Description: API timeout in seconds
+    Type: Number
+    Default: 10
+  pVPCCIDR:
+    Description: CIDR range for the VPC
+    Type: String
+    Default: '10.1.0.0/16'
+  pLambdaSubnet1CIDR:
+    Description: IP range for the private subnet in the first Availability Zone
+    Type: String
+    Default: '10.1.0.0/24'
+  pLambdaSubnet2CIDR:
+    Description: IP range for the private subnet in the second Availability Zone
+    Type: String
+    Default: '10.1.1.0/24'
+  pLambdaSubnet3CIDR:
+    Description: IP range for the private subnet in the third Availability Zone
+    Type: String
+    Default: '10.1.2.0/24'
+  pEndpointSubnet1CIDR:
+    Description: IP range for the private subnet in the first Availability Zone
+    Type: String
+    Default: '10.1.10.0/24'
+  pEndpointSubnet2CIDR:
+    Description: IP range for the private subnet in the second Availability Zone
+    Type: String
+    Default: '10.1.11.0/24'
+  pEndpointSubnet3CIDR:
+    Description: IP range for the private subnet in the third Availability Zone
+    Type: String
+    Default: '10.1.12.0/24'
+  pNumberOfSubnets:
+    Description: Number of subnets to create (should match number of AZs)
+    Type: Number
+    Default: 3
+    MinValue: 2
+    MaxValue: 3
+
+Conditions:
+  cThreeAZs: !Equals [!Ref pNumberOfSubnets, 3]
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pVPCCIDR
+      EnableDnsSupport: True
+      EnableDnsHostnames: True
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-VPC'
+
+  LambdaSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pLambdaSubnet1CIDR
+      AvailabilityZone: !Select
+      - 0
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-LambdaSubnet1'
+
+  LambdaSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pLambdaSubnet2CIDR
+      AvailabilityZone: !Select
+      - 1
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-LambdaSubnet2'
+
+  LambdaSubnet3:
+    Type: AWS::EC2::Subnet
+    Condition: cThreeAZs
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pLambdaSubnet3CIDR
+      AvailabilityZone: !Select
+      - 2
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-LambdaSubnet3'
+
+  EndpointSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pEndpointSubnet1CIDR
+      AvailabilityZone: !Select
+      - 0
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-EndpointSubnet1'
+
+  EndpointSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pEndpointSubnet2CIDR
+      AvailabilityZone: !Select
+      - 1
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-EndpointSubnet2'
+        
+  EndpointSubnet3:
+    Type: AWS::EC2::Subnet
+    Condition: cThreeAZs
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pEndpointSubnet3CIDR
+      AvailabilityZone: !Select
+      - 2
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-EndpointSubnet3'
+
+  APIClientStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: api-client.yaml
+      Parameters:
+        pAPIHost: !Ref pAPIHost
+        pAPIPrefix: !Ref pAPIPrefix
+        pAPIAccountID: !Ref pAPIAccountID
+        pAPIRoleARN: !Ref pAPIRoleARN
+        pAPITimeout: !Ref pAPITimeout
+        pVPCID: !Ref VPC
+        pLambdaSubnetIDs:
+          Fn::Join:
+          - ','
+          - - !Ref LambdaSubnet1
+            - !Ref LambdaSubnet2
+            - !If [cThreeAZs, !Ref LambdaSubnet3, !Ref AWS::NoValue]
+        pEndpointSubnetIDs:
+          Fn::Join:
+          - ','
+          - - !Ref EndpointSubnet1
+            - !Ref EndpointSubnet2
+            - !If [cThreeAZs, !Ref EndpointSubnet3, !Ref AWS::NoValue]
+        pCreateSTSEndpoint: 'Yes'
+        pEnablePrivateDNS: 'True'
+        pDNSServerCIDR: 
+          # Construct the IP address of the VPC DNS resolver
+          Fn::Sub:
+          - '${One}.${Two}.${Three}.2/32'
+          - One: !Select [0, !Split ['.', !Ref pVPCCIDR ]]
+            Two: !Select [1, !Split ['.', !Ref pVPCCIDR ]]
+            Three: !Select [2, !Split ['.', !Ref pVPCCIDR ]]
+
+Outputs:
+  APIGatewayEndpointID:
+    Description: API Gateway VPC endpoint ID
+    Value: !GetAtt APIClientStack.Outputs.APIGatewayEndpointID
+  DirectAuthClientRole:
+    Description: >-
+      Role ARN for the Lambda client function to add to API Gateway resource policy
+      for direct auth
+    Value: !GetAtt APIClientStack.Outputs.DirectAuthClientRole
+  PythonDirectAuthClient:
+    Description: Name of the python Direct Auth Lambda function
+    Value: !GetAtt APIClientStack.Outputs.PythonDirectAuthClient
+  PythonAssumeRoleClient:
+    Description: Name of the python Assume Role Lambda function
+    Value: !GetAtt APIClientStack.Outputs.PythonAssumeRoleClient
+
+  
+      

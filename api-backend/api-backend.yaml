@@ -1,0 +1,532 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: Private API demo backend resources
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Access control
+        Parameters:
+          - pTrustedPrincipals
+          - pAPIAccessList
+          - pAllowedVPCEndpoints
+          - pEnableWAF
+      - Label:
+          default: API details
+        Parameters:
+          - pAPIStageName
+          - pAPIAccessLogRetention
+          - pAPIGatewayAccountRole
+      - Label:
+          default: Network details (optional)
+        Parameters:
+          - pVPCID
+          - pLambdaSubnetIDs
+          - pCreateDDBEndpoint
+          - pLambdaSubnetRouteTable
+    ParameterLabels:
+      pTrustedPrincipals:
+        default: Who can assume the role for API access?
+      pAPIAccessList:
+        default: Who can access the API directly (without assuming the role)?
+      pAllowedVPCEndpoints:
+        default: VPC Endpoint IDs to whitelist
+      pAPIStageName:
+        default: API Stage name
+      pAPIAccessLogRetention:
+        default: API Access Log retention
+      pAPIGatewayAccountRole:
+        default: Create a Cloudwatch Logs role for API Gateway?
+      pEnableWAF:
+        default: Enable AWS WAF on the API?
+      pVPCID:
+        default: VPC ID 
+      pLambdaSubnetIDs:
+        default: List of Lambda function VPC subnets
+      pCreateDDBEndpoint:
+        default: Create DDB VPC endpoint?
+      pLambdaSubnetRouteTable:
+        default: ID of the route table to update with DDB endpoint
+
+Parameters:
+  pTrustedPrincipals:
+    Description: >-
+      For access using assume role: The list of principals (AWS accounts or ARNs) that
+      can assume the API execution role
+    Type: CommaDelimitedList
+    Default: Nobody
+  pAPIAccessList:
+    Description: >-
+      For direct access from the client: List of principals that will be explicitly 
+      granted access to the API via resource policy
+    Type: String
+    Default: 'None'
+    AllowedPattern: '^[a-zA-Z0-9\-,_:\/]*$'
+  pAllowedVPCEndpoints:
+    Description: >-
+      Comma separated whitelist of VPC endpoint IDs that will be added to the condition 
+      on the API Gateway resource policy. 
+    Type: String
+    Default: 'None'
+    AllowedPattern: '^[a-zA-Z0-9\-,]*$'
+  pAPIStageName:
+    Description: API stage name (first component of the API path).
+    Type: String
+    Default: Prod
+    AllowedPattern: '^[a-zA-Z0-9\-_]+$'
+  pAPIAccessLogRetention:
+    Description: Number of days to retain API Gateway access logs in CloudWatch
+    Type: Number
+    Default: 60
+    # Values as per https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-logs-loggroup.html
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+  pAPIGatewayAccountRole:
+    Description: >-
+      Whether to create an account level role for API gateway allowing
+      Cloudwatch Logs access.  Required only if it has not already been set.
+    Type: String
+    Default: 'Yes'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  pEnableWAF:
+    Description: Whether to enable AWS WAF on the API
+    Type: String
+    Default: 'Yes'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  pVPCID:
+    Description: >-
+      VPC ID in which to deploy the API backend Lambda function and DynamoDB endpoint.
+      This value is optional, if you do not specify a VPC there will be no VPC configuration
+      applied.
+    Type: String
+    Default: ''
+  pLambdaSubnetIDs:
+    Description: >-
+      List of subnet IDs for the Lambda function ENIs. 
+      Required only if you are deploying into a VPC.
+    Type: CommaDelimitedList
+    Default: ''
+  pCreateDDBEndpoint:
+    Description: >-
+      Set to No if there is already a DDB endpoint in your VPC.
+      This is ignored if you are not deploying into a VPC.
+    Type: String
+    Default: 'Yes'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  pLambdaSubnetRouteTable:
+    Description: >-
+      ID of the route table to update with the DDB endpoint route.
+      Required only if you are deploying into a VPC and creating the DDB endpoint.
+    Type: String
+    Default: 'None'
+    AllowedPattern: '^(None|[a-zA-Z0-9\-]*)$'
+
+Conditions:
+  cHasAllowedEndpoints: !Not [!Equals [!Ref pAllowedVPCEndpoints, 'None']]
+  cAPIAccessSpecified: !Not [!Equals [!Ref pAPIAccessList, 'None']]
+  cRoleTrustSpecified: !Not [!Equals [!Select [0, !Ref pTrustedPrincipals], 'Nobody']]
+  cCreateAPIGatewayAccountRole: !Equals [!Ref pAPIGatewayAccountRole, 'Yes']
+  cEnableWAF: !Equals [!Ref pEnableWAF, 'Yes']
+  cDeployToVPC: !Not [!Equals [!Ref pVPCID, '']]
+  cCreateDDBEndpoint: !And 
+    - !Condition cDeployToVPC
+    - !Equals [!Ref pCreateDDBEndpoint, 'Yes']
+  cUpdateRouteTable: !And
+    - !Condition cDeployToVPC
+    - !Not [!Equals [!Ref pLambdaSubnetRouteTable, 'None']]
+
+Resources:
+  # CloudWatch Log group for API Gateway access logs
+  rAccessLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '${AWS::StackName}-APIAccessLogs'
+      RetentionInDays: !Ref pAPIAccessLogRetention
+
+  # API Gateway account role, allowing CloudWatch logs access
+  rAPIGatewayAccountRole:
+    Type: AWS::IAM::Role
+    Condition: cCreateAPIGatewayAccountRole
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+
+  rAPIGatewayAccountSettings:
+    Type: AWS::ApiGateway::Account
+    Condition: cCreateAPIGatewayAccountRole
+    DependsOn: rAPI
+    Properties:
+      CloudWatchRoleArn: !GetAtt rAPIGatewayAccountRole.Arn
+
+  # A role that will be granted full invoke access to the API.  This is a simple
+  # way to enable access to the API, but does not need to be used.
+  # The trust policy will be set to this account, or the given ARNs specified
+  # in the pWhoToTrust parameter.
+  rAPIAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                # Trust the local account if no other ARN is specified
+                Fn::If:
+                  - cRoleTrustSpecified
+                  - Ref: pTrustedPrincipals
+                  - Ref: AWS::AccountId
+            Action: sts:AssumeRole
+
+  # The IAM policy attached to the above role.  This needs to be separated due
+  # to a circular dependency on the API resource which needs to be created
+  # first.
+  rAPIAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles:
+        - !Ref rAPIAccessRole
+      PolicyName: !Sub '${AWS::StackName}-APIAccessPolicy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: execute-api:Invoke
+            Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${rAPI}/*"
+
+  # API definition, using the Serverless Application Model
+  # Sets up IAM auth and a resource policy which controls access based on the
+  # defined roles and VPC endpoints.
+  rAPI:
+    Type: AWS::Serverless::Api
+    DependsOn: rAPIFunction
+    Properties:
+      AccessLogSetting:
+        DestinationArn: !GetAtt rAccessLogsGroup.Arn
+        # This configures a very detailed access log which is helpful in troubleshooting.
+        # https://aws.amazon.com/blogs/compute/troubleshooting-amazon-api-gateway-with-enhanced-observability-variables/
+        Format: >-
+          { "requestId":"$context.requestId",
+          "waf-error":"$context.waf.error",
+          "waf-status":"$context.waf.status",
+          "waf-latency":"$context.waf.latency",
+          "waf-response":"$context.waf.wafResponseCode",
+          "authenticate-error":"$context.authenticate.error",
+          "authenticate-status":"$context.authenticate.status",
+          "authenticate-latency":"$context.authenticate.latency",
+          "integration-error":"$context.integration.error",
+          "integration-status":"$context.integration.status",
+          "integration-latency":"$context.integration.latency",
+          "integration-requestId":"$context.integration.requestId",
+          "integration-integrationStatus":"$context.integration.integrationStatus",
+          "response-latency":"$context.responseLatency",
+          "ip": "$context.identity.sourceIp",
+          "caller":"$context.identity.caller",
+          "user":"$context.identity.user",
+          "arn":"$context.identity.userArn",
+          "account":"$context.identity.accountId",
+          "requestTime":"$context.requestTime",
+          "httpMethod":"$context.httpMethod",
+          "resourcePath":"$context.resourcePath",
+          "status":"$context.status",
+          "message":"$context.error.message",
+          "protocol":"$context.protocol",
+          "responseLength":"$context.responseLength" }
+      # This will add the appropriate AWS_IAM security scheme to the API spec
+      Auth:
+        DefaultAuthorizer: AWS_IAM
+        InvokeRole: NONE
+      # SAM doesn't yet support VPCEndpointIds in the EndpointConfiguration.
+      # Once this is supported, this will create an additional DNS name to
+      # simplify API invocation.
+      EndpointConfiguration: PRIVATE
+      Name: !Sub '${AWS::StackName}-API'
+      StageName: !Ref pAPIStageName
+      # Enable API Gateway logging and metrics collection
+      MethodSettings:
+        - HttpMethod: '*'
+          ResourcePath: '/*'
+          LoggingLevel: INFO
+          MetricsEnabled: True
+      # Intrinsic functions like Fn::Split and Fn::Join don't yet work in the above Auth 
+      # ResourcePolicy statement, so we need to define the resource policy using the 
+      # OpenAPI spec and the x-amazon-apigateway-policy extension.
+      # https://github.com/aws/serverless-application-model/issues/1501
+      DefinitionBody:
+        openapi: "3.0.1"
+        info:
+          title: "Private API Demo"
+          version: "0.1"
+        paths:
+          /:
+            get:
+              # Set up a Lambda proxy integration.  See here for documentation:
+              # https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-extensions-integrations.html
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${rAPIFunction.Arn}/invocations"
+                content_handling: CONVERT_TO_TEXT
+                passthroughBehaviour: when_no_match
+                httpMethod: POST
+                type: aws_proxy
+        # API Gateway resource policy definition.  This policy allows access
+        # only to specified IAM principals coming from specified VPC endpoint IDs.
+        x-amazon-apigateway-policy:
+          Version: '2012-10-17'
+          Statement:
+            # This creates a list of allowed principal ARNs by joining together
+            # the list provided in the pAPIAccessList parameter to the ARN of
+            # the role created within this template (rAPIAccessRole)
+            - Effect: Allow
+              Principal:
+                AWS:
+                  Fn::Split:
+                    - ','
+                    - Fn::Join:
+                      - ','
+                      - - Fn::GetAtt: rAPIAccessRole.Arn
+                        - Fn::If:
+                          - cAPIAccessSpecified
+                          - Ref: pAPIAccessList
+                          - Ref: AWS::NoValue
+              Action: execute-api:Invoke
+              Resource: execute-api:/*
+            # This section creates the allow list for VPC endpoint IDs that are
+            # supplied through the pAllowedVPCEndpoints parameter.  It is
+            # implemented as a "Deny if VPC endpoint is not in <list>".
+            - Fn::If:
+              - cHasAllowedEndpoints
+              - Effect: Deny
+                Principal: "*"
+                Action: execute-api:Invoke
+                Resource: execute-api:/*
+                Condition:
+                  StringNotEquals:
+                    aws:SourceVpce:
+                      Fn::Split:
+                        - ','
+                        - Ref: pAllowedVPCEndpoints
+              - Ref: AWS::NoValue
+
+  # DynamoDB table
+  rDDBTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+
+  # Definition of the Lambda function invoked through the API Gateway
+  rAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: api-backend.handler
+      Runtime: python3.7
+      Description: Receives API requests for invocations through API Gateway
+      MemorySize: 128
+      Timeout: 10 
+      Events:
+        GetApi:
+          Type: Api
+          Properties:
+            Path: /
+            Method: GET
+            RestApiId: !Ref rAPI
+      CodeUri: python-backend-lambda/
+      Environment:
+        Variables:
+          DDB_TABLE: !Ref rDDBTable
+      VpcConfig:
+        # VPC Config is optional
+        Fn::If:
+          - cDeployToVPC
+          - SecurityGroupIds:
+            - !GetAtt rAPIFunctionSecurityGroup.GroupId
+            # Need to convert subnetID list to a string list
+            SubnetIds: !Split [',', !Join [',', !Ref pLambdaSubnetIDs]]
+          - !Ref AWS::NoValue
+      Policies:
+        - VPCAccessPolicy: {}
+        - DynamoDBCrudPolicy:
+            TableName: !Ref rDDBTable
+
+  # AWS WAF deployment with the AWS managed rules
+  rWAF:
+    Type: AWS::WAFv2::WebACL
+    Condition: cEnableWAF
+    Properties:
+      Name: !Sub '${AWS::StackName}-WAF-WebACL'
+      Scope: REGIONAL
+      Description: WAF WebACL with AWS Managed rules
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${AWS::StackName}-API'
+      Rules:
+        - Name: AWSManagedWAFRules
+          Priority: 0
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: !Sub '${AWS::StackName}-AWSCommon'
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              ExcludedRules: []
+
+  rWAFAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: cEnableWAF
+    # rAPIStage is the SAM-generated logical ID for the API stage resource
+    DependsOn: rAPIStage
+    Properties:
+      ResourceArn: !Sub 'arn:aws:apigateway:${AWS::Region}::/restapis/${rAPI}/stages/${pAPIStageName}'
+      WebACLArn: !GetAtt rWAF.Arn
+
+  # OPTIONAL VPC resources
+  # The remaining resources are deployed only if the function is being connected to a VPC
+
+  # VPC Prefix list helper custom resource.  Source:
+  # This looks up the AWS managed prefix list for DynamoDB in the local region
+  # https://github.com/awslabs/aws-cloudformation-templates/tree/master/aws/solutions/PrefixListResource
+  rGetPLResourceFunction:
+    Type: AWS::Serverless::Function
+    Condition: cDeployToVPC
+    Properties:
+      Description: Retrieve prefix lists for use in Security Groups
+      Runtime: python3.7
+      Handler: lambda_function.handler
+      CodeUri: prefix-list-resource/.build/
+      Timeout: 300
+      Environment:
+        Variables:
+          Logging: Debug
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: ec2:DescribePrefixLists
+              Resource: "*"
+
+  # Execute the prefix list helper to retrieve the local DDB prefix list ID
+  rDDBPrefixListID:
+    Type: Custom::GetPLResource
+    Condition: cDeployToVPC
+    Properties:
+      ServiceToken: !GetAtt rGetPLResourceFunction.Arn
+      loglevel: debug
+      PrefixListName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+
+  # Security group for the API backend Lambda function
+  rAPIFunctionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: cDeployToVPC
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-APIBackend-SecurityGroup'
+      GroupDescription: Control API backend function network access
+      VpcId: !Ref pVPCID
+      SecurityGroupEgress:
+        - Description: Allow DNS outbound
+          CidrIp: 0.0.0.0/0
+          IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+        # Reference the DDB prefix list ID retrieved by the helper function 
+        - Description: Allow DynamoDB outbound, using prefix list
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationPrefixListId: !GetAtt rDDBPrefixListID.PrefixListID
+
+  # DynamoDB gateway endpoint
+  rDDBEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: cCreateDDBEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref pVPCID
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      RouteTableIds:
+        - Fn::If:
+          - cUpdateRouteTable
+          - Ref: pLambdaSubnetRouteTable
+          - Ref: AWS::NoValue
+      # Allow access only to our specific DDB table
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: 
+              - dynamodb:Batch*
+              - dynamodb:DeleteItem
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource: !GetAtt rDDBTable.Arn
+
+Outputs:
+  APIGatewayID:
+    Description: API Gateway ID
+    Value: !Ref rAPI
+  APIGatewayFQDN:
+    Description: Fully qualified domain name of the API Gateway
+    Value: !Sub '${rAPI}.execute-api.${AWS::Region}.amazonaws.com'
+  APIAccessRole:
+    Description: ARN of the access role for the function to assume
+    Value: !GetAtt rAPIAccessRole.Arn

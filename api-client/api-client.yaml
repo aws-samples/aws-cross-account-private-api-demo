@@ -1,0 +1,350 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Deploys a Lambda function and VPC endpoints for invoking a private API
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: API details
+        Parameters:
+          - pAPIHost
+          - pAPIPrefix
+          - pAPIAccountID
+          - pAPITimeout
+      - Label:
+          default: Authentication
+        Parameters:
+          - pAPIRoleARN
+      - Label:
+          default: Network details
+        Parameters:
+          - pVPCID
+          - pLambdaSubnetIDs
+          - pEndpointSubnetIDs
+          - pCreateSTSEndpoint
+          - pEnablePrivateDNS
+          - pDNSServerCIDR
+    ParameterLabels:
+      pAPIHost:
+        default: API domain name
+      pAPIPrefix:
+        default: API path prefix
+      pAPIAccountID:
+        default: AWS Account ID of the API Gateway
+      pAPITimeout:
+        default: API Timeout
+      pAPIRoleARN:
+        default: ARN of role to assume
+      pVPCID:
+        default: Select VPC
+      pLambdaSubnetIDs:
+        default: Select Lambda function VPC subnets
+      pEndpointSubnetIDs:
+        default: Select API Gateway Endpoint VPC subnets
+      pCreateSTSEndpoint:
+        default: Create STS endpoint?
+      pEnablePrivateDNS:
+        default: Enable private DNS resolution on the API Gateway endpoint?
+      pDNSServerCIDR:
+        default: CIDR Range of your DNS server infrastructure
+
+Parameters:
+  pAPIHost:
+    Description: Fully qualified domain name of the API gateway
+    Type: String
+    AllowedPattern: '^[a-zA-Z0-9\.\-]+$'
+  pAPIPrefix:
+    Description: >-
+      URI path prefix for the API (usually the stage name with a / in front)
+    Type: String
+    Default: /Prod
+    AllowedPattern: '^/[a-zA-Z0-9\-_]+$'
+  pAPIAccountID:
+    Description: >-
+      12 digit AWS Account ID that hosts the API.  "Local" will be substituted with
+      the AWS::AccountId variable.
+    Type: String
+    Default: Local
+    AllowedPattern: '^(Local|[0-9]{12})$'
+  pAPIRoleARN:
+    Description: >-
+      Role ARN with API invoke privileges.  If specified, client Lambda function
+      will assume this role to invoke the API instead of using its own.
+    Type: String
+    Default: 'None'
+    AllowedPattern: '^(None|arn:[a-zA-Z0-9:\-\/]+)$'
+  pAPITimeout:
+    Description: API connection timeout in seconds for the client
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 30 
+  pVPCID:
+    Description: >-
+      VPC ID in which to deploy the API client Lambda function and API gateway
+      endpoint
+    Type: AWS::EC2::VPC::Id
+  pLambdaSubnetIDs:
+    Description: List of subnet IDs for the Lambda function ENIs
+    Type: List<AWS::EC2::Subnet::Id>
+  pEndpointSubnetIDs:
+    Description: List of subnet IDs for the API Gateway Private Endpoint
+    Type: List<AWS::EC2::Subnet::Id>
+  pCreateSTSEndpoint:
+    Description: >-
+      STS endpoint or internet egress is required. Set to No if there is already
+      an endpoint or internet egress route.
+    Type: String
+    Default: 'Yes'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  pEnablePrivateDNS:
+    Description: >-
+      Enable or disable private DNS resolution on the API Gateway endpoint.  If
+      disabled, the client function will connect using the VPC Endpoint DNS name
+      rather than the API gateway hostname.
+    Type: String
+    Default: 'True'
+    AllowedValues:
+      - 'True'
+      - 'False'
+  pDNSServerCIDR:
+    Description: >-
+      CIDR range of your DNS server infrastructure, used in the API client security 
+      group to restrict egress traffic to only the specific range.
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}$'
+
+Conditions:
+  cForeignAPIGateway: !Not [!Equals [!Ref pAPIAccountID, 'Local']]
+  cAPIRoleDefined: !Not [!Equals [!Ref pAPIRoleARN, 'None']]
+  cCreateSTSEndpoint: !Equals [!Ref pCreateSTSEndpoint, 'Yes']
+
+Resources:
+  # Security group for API clients, allowing outbound HTTPS and DNS and
+  # referenced as a source on the API endpoint security group.
+  rAPIClientSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIClient-SecurityGroup'
+      GroupDescription: Allow API clients outbound HTTPS and DNS access
+      VpcId: !Ref pVPCID
+      SecurityGroupEgress:
+        - Description: Allow DNS outbound
+          CidrIp: !Ref pDNSServerCIDR
+          IpProtocol: udp
+          FromPort: 53
+          ToPort: 53
+
+  # Security group egress rule for the client
+  rAPIClientSecurityGroupEgress1:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: Allow outbound HTTPS to the API endpoint
+      GroupId: !GetAtt rAPIClientSecurityGroup.GroupId
+      DestinationSecurityGroupId: !GetAtt rAPIEndpointSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+
+  rAPIClientSecurityGroupEgress2:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: Allow outbound HTTPS to the STS endpoint
+      GroupId: !GetAtt rAPIClientSecurityGroup.GroupId
+      DestinationSecurityGroupId: !GetAtt rSTSEndpointSecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+
+  # Security group for the API Gateway endpoint that allows inbound HTTPS from
+  # the client security group
+  rAPIEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: rAPIClientSecurityGroup
+    Properties:
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIEndpoint-SecurityGroup'
+      GroupDescription: Allow API clients access to the API Gateway endpoint
+      VpcId: !Ref pVPCID
+      SecurityGroupIngress:
+        - Description: Allow inbound HTTPS from the API client security group
+          SourceSecurityGroupId: !GetAtt rAPIClientSecurityGroup.GroupId
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+
+  # Security group for the STS endpoint - allow all HTTPS
+  rSTSEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: cCreateSTSEndpoint
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-STSEndpoint-SecurityGroup'
+      GroupDescription: Allow all HTTPS inbound access to the STS endpoint
+      VpcId: !Ref pVPCID
+      SecurityGroupIngress:
+        - Description: Allow all HTTPS access
+          CidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+
+  # API Gateway private endpoint
+  # A resource policy is also set to allow access to the specified API only.
+  rAPIGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref pVPCID
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.execute-api'
+      PrivateDnsEnabled: !Ref pEnablePrivateDNS
+      SecurityGroupIds:
+        - !Join ['', [!Ref rAPIEndpointSecurityGroup]]
+      SubnetIds: !Split [',', !Join [',', !Ref pEndpointSubnetIDs]]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: !Sub
+              - 'arn:aws:execute-api:${AWS::Region}:${APIGatewayAccount}:${APIGatewayID}${pAPIPrefix}/*'
+              - APIGatewayAccount: !If [cForeignAPIGateway, !Ref pAPIAccountID, !Ref 'AWS::AccountId']
+                APIGatewayID: !Select [0, !Split ['.', !Ref pAPIHost]]
+
+  # STS service private endpoint
+  # Allows the Lambda client to operate without any internet connectivity.
+  rSTSEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: cCreateSTSEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      VpcId: !Ref pVPCID
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sts'
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !Join ['', [!Ref rSTSEndpointSecurityGroup]]
+      SubnetIds: !Split [',', !Join [',', !Ref pEndpointSubnetIDs]]
+
+  # Lambda API client functions are defined below.
+  # The first function below performs a direct invocation of the API, using it's execution
+  # role.
+  rPythonDirectAuthClient:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: direct-auth.lambda_handler
+      Runtime: python3.7
+      Description: >
+        Python API client function to demo invocation of a private API with IAM auth, 
+        using the functions execution role
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          API_HOST: !Ref pAPIHost
+          API_PREFIX: !Ref pAPIPrefix
+          # The client function will connect via the appropriate VPC endpoint
+          # DNS name if private DNS is not enabled.
+          VPCE_DNS_NAMES: !Join [',', !GetAtt rAPIGatewayEndpoint.DnsEntries]
+          API_TIMEOUT: !Ref pAPITimeout
+          PRIVATE_DNS_ENABLED: !Ref pEnablePrivateDNS
+      CodeUri: python-client-lambda/.build/
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt rAPIClientSecurityGroup.GroupId
+        # Need to convert subnetID list to a string list
+        SubnetIds: !Split [',', !Join [',', !Ref pLambdaSubnetIDs]]
+      # Set policies that allow the function to invoke the API directly
+      Policies:
+        - VPCAccessPolicy: {}
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: execute-api:Invoke
+              Resource:
+                - !Sub
+                  - 'arn:aws:execute-api:${AWS::Region}:${APIGatewayAccount}:${APIGatewayHash}/${APIGatewayStage}/*'
+                  - APIGatewayAccount: !If [cForeignAPIGateway, !Ref pAPIAccountID, !Ref 'AWS::AccountId']
+                    APIGatewayHash: !Select [0, !Split ['.', !Ref pAPIHost]]
+                    APIGatewayStage: !Select [1, !Split ['/', !Ref pAPIPrefix]]
+
+  # This definition is similar to the one above, except it will assume the specified role
+  # (which is passed in via an environment variable) before invoking the function. 
+  rPythonAssumeRoleClient:
+    Type: AWS::Serverless::Function
+    Condition: cAPIRoleDefined
+    Properties:
+      Handler: assume-role.lambda_handler
+      Runtime: python3.7
+      Description: >
+        Python API client function to demo invocation of a private API with IAM auth, 
+        using assume role into the target account
+      MemorySize: 128
+      Timeout: 30
+      Environment:
+        Variables:
+          API_HOST: !Ref pAPIHost
+          API_PREFIX: !Ref pAPIPrefix
+          # The client function will connect via the appropriate VPC endpoint
+          # DNS name if private DNS is not enabled.
+          VPCE_DNS_NAMES: !Join [',', !GetAtt rAPIGatewayEndpoint.DnsEntries]
+          API_TIMEOUT: !Ref pAPITimeout
+          ROLE_TO_ASSUME: !Ref pAPIRoleARN
+          # This is required to use the regional STS endpoint, which will
+          # resolve to the private STS endpoint defined above.
+          AWS_STS_REGIONAL_ENDPOINTS: regional
+          PRIVATE_DNS_ENABLED: !Ref pEnablePrivateDNS
+      CodeUri: python-client-lambda/.build/
+      VpcConfig:
+        SecurityGroupIds:
+          - !GetAtt rAPIClientSecurityGroup.GroupId
+        # Need to convert subnetID list to a string list
+        SubnetIds: !Split [',', !Join [',', !Ref pLambdaSubnetIDs]]
+      # Set policies that allow the function to assume the role specified as a parameter
+      Policies:
+        - VPCAccessPolicy: {}
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !Ref pAPIRoleARN
+
+Outputs:
+  APIGatewayEndpointID:
+    Description: API Gateway VPC endpoint ID
+    Value: !Ref rAPIGatewayEndpoint
+  DirectAuthClientRole:
+    Description: >-
+      Role ARN for the Lambda client function to add to API Gateway resource policy 
+      for direct auth
+    Value: !GetAtt rPythonDirectAuthClientRole.Arn
+  PythonDirectAuthClient:
+    Description: Name of the python Direct Auth Lambda function
+    Value: !Ref rPythonDirectAuthClient
+  PythonAssumeRoleClient:
+    Description: Name of the python Assume Role Lambda function
+    Value: !Ref rPythonAssumeRoleClient

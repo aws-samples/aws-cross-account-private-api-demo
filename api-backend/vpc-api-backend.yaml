@@ -1,0 +1,208 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Deploys a VPC and nested API backend stack with Lambda function and VPC endpoints
+
+Parameters:
+  pTrustedPrincipals:
+    Description: >-
+      List of principals (AWS accounts or ARNs) that can assume the API execution role
+    Type: String
+    Default: Nobody
+  pAPIAccessList:
+    Description: >-
+      List of principals who will be allowed access to the API via resource policy
+    Type: String
+    Default: 'None'
+  pAllowedVPCEndpoints:
+    Description: >-
+      A comma separated list of additional VPC endpoints that will be allowed access.  
+      If an endpoint is created as part of this stack it will be automatically
+      included.
+    Type: String
+    Default: 'None'
+  pAPIStageName:
+    Description: The name of the API stage to create
+    Type: String
+    Default: Prod
+  pAPIAccessLogRetention:
+    Description: Number of days to retain API Gateway access logs in CloudWatch
+    Type: Number
+    Default: 60
+  pAPIGatewayAccountRole:
+    Description: >-
+      Whether to create an account level role for API gateway allowing
+      Cloudwatch Logs access.  Required only if it has not already been set.
+    Type: String
+    Default: 'Yes'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  pEnableWAF:
+    Description: Whether to enable AWS WAF on the API
+    Type: String
+    Default: 'Yes'
+    AllowedValues:
+      - 'Yes'
+      - 'No'
+  pVPCCIDR:
+    Description: CIDR range for the VPC
+    Type: String
+    Default: '10.2.0.0/16'
+  pLambdaSubnet1CIDR:
+    Description: IP range for the private subnet in the first Availability Zone
+    Type: String
+    Default: '10.2.0.0/24'
+  pLambdaSubnet2CIDR:
+    Description: IP range for the private subnet in the second Availability Zone
+    Type: String
+    Default: '10.2.1.0/24'
+  pLambdaSubnet3CIDR:
+    Description: IP range for the private subnet in the third Availability Zone
+    Type: String
+    Default: '10.2.2.0/24'
+  pEndpointSubnet1CIDR:
+    Description: IP range for the private subnet in the first Availability Zone
+    Type: String
+    Default: '10.2.10.0/24'
+  pEndpointSubnet2CIDR:
+    Description: IP range for the private subnet in the second Availability Zone
+    Type: String
+    Default: '10.2.11.0/24'
+  pEndpointSubnet3CIDR:
+    Description: IP range for the private subnet in the third Availability Zone
+    Type: String
+    Default: '10.2.12.0/24'
+  pNumberOfSubnets:
+    Description: Number of subnets to create (should match number of AZs)
+    Type: Number
+    Default: 3
+    MinValue: 2
+    MaxValue: 3
+
+Conditions:
+  cThreeAZs: !Equals [!Ref pNumberOfSubnets, 3]
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pVPCCIDR
+      EnableDnsSupport: True
+      EnableDnsHostnames: True
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIBackend-VPC'
+
+  LambdaSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pLambdaSubnet1CIDR
+      AvailabilityZone: !Select
+      - 0
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIBackend-LambdaSubnet1'
+
+  LambdaSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pLambdaSubnet2CIDR
+      AvailabilityZone: !Select
+      - 1
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIBackend-LambdaSubnet2'
+
+  LambdaSubnet3:
+    Type: AWS::EC2::Subnet
+    Condition: cThreeAZs
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref pLambdaSubnet3CIDR
+      AvailabilityZone: !Select
+      - 2
+      - Fn::GetAZs: !Ref 'AWS::Region'
+      Tags:
+      - Key: Name
+        Value: !Sub '${AWS::StackName}-APIBackend-LambdaSubnet3'
+
+  LambdaRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-LambdaRouteTable'
+      VpcId: !Ref VPC
+
+  LambaRouteTableAssociationSubnet1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref LambdaRouteTable
+      SubnetId: !Ref LambdaSubnet1
+
+  LambaRouteTableAssociationSubnet2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref LambdaRouteTable
+      SubnetId: !Ref LambdaSubnet2
+
+  LambaRouteTableAssociationSubnet3:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref LambdaRouteTable
+      SubnetId: !Ref LambdaSubnet3
+
+  APIBackendStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: api-backend.yaml
+      Parameters:
+        pTrustedPrincipals: !Ref pTrustedPrincipals
+        pAPIAccessList: !Ref pAPIAccessList
+        pAllowedVPCEndpoints: !Ref pAllowedVPCEndpoints
+        pAPIStageName: !Ref pAPIStageName
+        pAPIAccessLogRetention: !Ref pAPIAccessLogRetention
+        pAPIGatewayAccountRole: !Ref pAPIGatewayAccountRole
+        pEnableWAF: !Ref pEnableWAF
+        pVPCID: !Ref VPC
+        pLambdaSubnetIDs:
+          Fn::Join:
+          - ','
+          - - !Ref LambdaSubnet1
+            - !Ref LambdaSubnet2
+            - !If [cThreeAZs, !Ref LambdaSubnet3, !Ref AWS::NoValue]
+        pLambdaSubnetRouteTable: !Ref LambdaRouteTable
+
+Outputs:
+  APIGatewayID:
+    Description: API Gateway ID
+    Value: !GetAtt APIBackendStack.Outputs.APIGatewayID
+  APIGatewayFQDN:
+    Description: Fully qualified domain name of the API Gateway
+    Value: !GetAtt APIBackendStack.Outputs.APIGatewayFQDN
+  APIAccessRole:
+    Description: ARN of the access role for the client function to assume
+    Value: !GetAtt APIBackendStack.Outputs.APIAccessRole
+
+  
+      

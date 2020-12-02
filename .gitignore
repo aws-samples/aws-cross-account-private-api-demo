@@ -1,0 +1,5 @@
+*-deploy.yaml
+samconfig.toml
+output.txt
+.build
+.vscode
