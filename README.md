@@ -46,6 +46,8 @@ In a real world situation, each stack could be deployed by a different team or o
 Templates with `vpc-` prefix in their names also deploy the VPC and subnet resources, and create nested stacks for the API and Lambda resources passing in the necessary VPC parameters.
 
 ## Prerequisites
+1. [Python3](https://www.python.org/downloads/) and [pip](https://pip.pypa.io/en/stable/installing/), for packaging the AWS Lambda functions and their dependencies
+
 1. Install AWS CLI:
 https://docs.aws.amazon.com/cli/latest/userguide/cli-chap-install.html
 
