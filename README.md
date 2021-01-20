@@ -199,7 +199,6 @@ sam deploy --template-file api-backend/vpc-api-backend-deploy.yaml \
 ```
 **Note** CloudFormation supports parameter values of up to a maximum of 4,096 bytes.
 
-
 ## Parameter Reference
 This section contains parameter references for the CloudFormation templates.  VPC related parameters do not need to be specified when deploying through the `vpc-` prefixed templates, as these create the necessary VPC resources for you.
 
@@ -241,6 +240,19 @@ Parameters are outlined in the table below.
 | pEndpointSubnetIDs | List of subnet IDs | | List of subnet IDs to deploy the VPC endpoints (API gateway and STS) |
 | pCreateSTSEndpoint | Yes or No | Yes | Whether or not to create the STS VPC endpoint.  This isn't required if there is an internet egress route on the VPC (via IGW or NATGW), or if the endpoint already exists. |
 | pEnablePrivateDNS | True or False | True | Whether to enable private DNS on the API gateway endpoint.  If not specified the Lambda function will use the VPC endpoint DNS name when connecting. |
+
+## Cleaning Up
+To delete the resources created by this demo, the CloudFormation stacks need to be deleted from both the provider and consumer AWS accounts.
+
+1. Delete the `private-api-backend` stack from the provider AWS account
+   ```
+   aws cloudformation delete-stack --stack-name private-api-backend --profile <Provider AWS account profile>
+   ```
+
+2. Delete the `private-api-client` stack from the consumer AWS account
+   ```
+   aws cloudformation delete-stack --stack-name private-api-client --profile <Consumer AWS account profile>
+   ```
 
 ## Security
 
