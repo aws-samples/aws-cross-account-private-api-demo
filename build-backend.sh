@@ -22,10 +22,16 @@ fi
 
 S3BUCKET=$1
 
+if [ ! -x "$(which pip3)" ]; then
+    echo "ERROR: pip3 not found or not executable.  Please make sure python3 and pip are installed."
+    exit 1
+fi
+
 echo "Installing python dependencies"
 cd api-backend/prefix-list-resource
 mkdir -p .build
-pip install -r requirements.txt --upgrade -t .build/
+pip3 install --system -r requirements.txt --upgrade -t .build/
+if [ $? -ne 0 ]; then exit 1; fi
 cp *.py .build/
 
 cd ..
