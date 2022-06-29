@@ -30,7 +30,7 @@ fi
 echo "Installing python dependencies"
 cd api-backend/prefix-list-resource
 mkdir -p .build
-pip3 install --system -r requirements.txt --upgrade -t .build/
+pip3 install -r requirements.txt --upgrade -t .build/
 if [ $? -ne 0 ]; then exit 1; fi
 cp *.py .build/
 

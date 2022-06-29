@@ -30,7 +30,7 @@ fi
 cd api-client/python-client-lambda
 mkdir -p .build
 echo "Installing python dependencies"
-pip3 install --system -r requirements.txt --upgrade -t .build/
+pip3 install -r requirements.txt --upgrade -t .build/
 if [ $? -ne 0 ]; then exit 1; fi
 cp *.py .build/
 
