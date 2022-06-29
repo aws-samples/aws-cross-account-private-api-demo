@@ -257,7 +257,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: direct-auth.lambda_handler
-      Runtime: python3.7
+      Runtime: python3.9
       Description: >
         Python API client function to demo invocation of a private API with IAM auth, 
         using the functions execution role
@@ -299,7 +299,7 @@ Resources:
     Condition: cAPIRoleDefined
     Properties:
       Handler: assume-role.lambda_handler
-      Runtime: python3.7
+      Runtime: python3.9
       Description: >
         Python API client function to demo invocation of a private API with IAM auth, 
         using assume role into the target account

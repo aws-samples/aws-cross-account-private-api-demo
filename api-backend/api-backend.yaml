@@ -366,7 +366,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       Handler: api-backend.handler
-      Runtime: python3.7
+      Runtime: python3.9
       Description: Receives API requests for invocations through API Gateway
       MemorySize: 128
       Timeout: 10 
@@ -444,7 +444,7 @@ Resources:
     Condition: cDeployToVPC
     Properties:
       Description: Retrieve prefix lists for use in Security Groups
-      Runtime: python3.7
+      Runtime: python3.9
       Handler: lambda_function.handler
       CodeUri: prefix-list-resource/.build/
       Timeout: 300
